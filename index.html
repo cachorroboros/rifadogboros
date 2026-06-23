@@ -3,645 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- CSP: bloqueia scripts inline não autorizados e origens externas não listadas -->
-<meta http-equiv="Content-Security-Policy"
-  content="default-src 'self';
-           script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://www.gstatic.com https://apis.google.com;
-           style-src  'self' 'unsafe-inline' https://fonts.googleapis.com;
-           font-src   https://fonts.gstatic.com;
-           connect-src 'self' https://*.firebaseio.com https://*.googleapis.com https://firestore.googleapis.com;
-           img-src 'self' data: blob:;">
 <title>Rifa Cachorroboros – KIT CHURRASCO</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-
-<!-- Firebase SDKs (modular, carregados como módulos) -->
-<script type="module">
-// ╔══════════════════════════════════════════════════════════╗
-// ║  PASSO 1 – Substitua os valores abaixo com os da sua    ║
-// ║  aplicação Firebase (Console → Configurações do projeto) ║
-// ╚══════════════════════════════════════════════════════════╝
-// Import the functions you need from the SDKs you need
-import { initializeApp } from "firebase/app";
-import { getAnalytics } from "firebase/analytics";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
-
-// Your web app's Firebase configuration
-// For Firebase JS SDK v7.20.0 and later, measurementId is optional
-const firebaseConfig = {
-  apiKey: "AIzaSyC7FKM98BduBneGX77q99TEorv8xOxooi8",
-  authDomain: "rifa-dogboros.firebaseapp.com",
-  projectId: "rifa-dogboros",
-  storageBucket: "rifa-dogboros.firebasestorage.app",
-  messagingSenderId: "848366037732",
-  appId: "1:848366037732:web:fd39c89222aaf3e1d35af1",
-  measurementId: "G-3N5EY43XKH"
-};
-
-// Initialize Firebase
-const app = initializeApp(firebaseConfig);
-const analytics = getAnalytics(app);
-
-// ──────────────────────────────────────────────────────────
-//  CRIPTOGRAFIA — AES-GCM via Web Crypto API (nativa, zero deps)
-//  Criptografa nome + telefone antes de salvar no Firestore.
-//  A chave é derivada de uma senha fixa conhecida só pelo operador
-//  e armazenada apenas no dispositivo do operador via sessionStorage.
-// ──────────────────────────────────────────────────────────
-const ENC_SALT = new Uint8Array([
-  0x43,0x61,0x63,0x68,0x6f,0x72,0x72,0x6f,
-  0x62,0x6f,0x72,0x6f,0x73,0x52,0x69,0x66
-]); // "CachorroborosRif" — fixo e público; segurança vem do password
-
-let _cryptoKey = null;
-
-async function deriveKey(password) {
-  const enc  = new TextEncoder();
-  const base = await crypto.subtle.importKey(
-    "raw", enc.encode(password), "PBKDF2", false, ["deriveKey"]
-  );
-  return crypto.subtle.deriveKey(
-    { name:"PBKDF2", salt:ENC_SALT, iterations:200000, hash:"SHA-256" },
-    base,
-    { name:"AES-GCM", length:256 },
-    false,
-    ["encrypt","decrypt"]
-  );
-}
-
-async function encrypt(plaintext) {
-  if (!_cryptoKey) throw new Error("Chave não definida");
-  const iv  = crypto.getRandomValues(new Uint8Array(12));
-  const enc = new TextEncoder();
-  const ct  = await crypto.subtle.encrypt(
-    { name:"AES-GCM", iv }, _cryptoKey, enc.encode(plaintext)
-  );
-  // Retorna iv+ciphertext em base64
-  const buf = new Uint8Array(iv.length + ct.byteLength);
-  buf.set(iv, 0);
-  buf.set(new Uint8Array(ct), iv.length);
-  return btoa(String.fromCharCode(...buf));
-}
-
-async function decrypt(b64) {
-  if (!_cryptoKey) return "[🔒 Criptografado]";
-  try {
-    const buf = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-    const iv  = buf.slice(0,12);
-    const ct  = buf.slice(12);
-    const pt  = await crypto.subtle.decrypt({ name:"AES-GCM", iv }, _cryptoKey, ct);
-    return new TextDecoder().decode(pt);
-  } catch {
-    return "[🔒 Erro na descriptografia]";
-  }
-}
-
-// ──────────────────────────────────────────────────────────
-//  SANITIZAÇÃO — previne XSS ao inserir dados no DOM
-// ──────────────────────────────────────────────────────────
-function esc(s) {
-  return (s || '').toString()
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#x27;')
-    .replace(/\//g, '&#x2F;');
-}
-
-// Insere texto puro no DOM sem risco de XSS (usa textContent)
-function safeSetText(el, text) {
-  if (typeof el === 'string') el = document.getElementById(el);
-  if (el) el.textContent = text;
-}
-
-// ──────────────────────────────────────────────────────────
-//  ESTADO LOCAL
-// ──────────────────────────────────────────────────────────
-const TOTAL  = 200;
-const PRIZES = [
-  'Picanha Estrela','Linguiça Toscana','Filé de Costela',
-  'Queijo Coalho','Pão de Alho','Pão Doce de Leite','Bolsa Térmica'
-];
-
-// sales[num] = { nomeEnc, telEnc, vendedor, ts }  (nome e tel criptografados)
-// salesDecrypted[num] = { nome, tel, vendedor, ts }  (em memória, nunca persiste)
-let sales = {};
-let salesDecrypted = {};
-let pendingNum = null;
-let unsubscribe = null;
-
-// ──────────────────────────────────────────────────────────
-//  FIREBASE — autenticação anônima + listener em tempo real
-// ──────────────────────────────────────────────────────────
-onAuthStateChanged(auth, async (user) => {
-  if (user) {
-    startListener();
-  }
-});
-
-async function initFirebase() {
-  try {
-    await signInAnonymously(auth);
-  } catch (e) {
-    console.error("Erro de autenticação:", e);
-    showToast("Erro ao conectar. Tente recarregar.", true);
-  }
-}
-
-function startListener() {
-  if (unsubscribe) unsubscribe();
-  const col = collection(db, "rifas", "cachorroboros", "sales");
-  unsubscribe = onSnapshot(col, async (snap) => {
-    sales = {};
-    salesDecrypted = {};
-    const decryptPromises = snap.docs.map(async d => {
-      const data = d.data();
-      const num = Number(d.id);
-      sales[num] = data;
-      // Descriptografa em memória
-      const nome = data.nomeEnc ? await decrypt(data.nomeEnc) : (data.nome || '');
-      const tel  = data.telEnc  ? await decrypt(data.telEnc)  : (data.tel  || '');
-      salesDecrypted[num] = { nome, tel, vendedor: data.vendedor || '', ts: data.ts || '' };
-    });
-    await Promise.all(decryptPromises);
-    refreshGrid();
-    updateCounters();
-    renderVendas();
-  }, (err) => {
-    console.error("Listener error:", err);
-    showToast("Erro de conexão com o banco.", true);
-  });
-}
-
-async function saveSale(num, nome, tel, vendedor) {
-  if (!_cryptoKey) throw new Error("Senha não definida");
-  const nomeEnc = await encrypt(nome);
-  const telEnc  = tel ? await encrypt(tel) : '';
-  // vendedor não é dado pessoal — salvo sem criptografia
-  const ref = doc(db, "rifas", "cachorroboros", "sales", String(num));
-  await setDoc(ref, {
-    nomeEnc,
-    telEnc,
-    vendedor: vendedor || '',
-    ts: new Date().toISOString()
-  });
-}
-
-async function deleteSale(num) {
-  const ref = doc(db, "rifas", "cachorroboros", "sales", String(num));
-  await deleteDoc(ref);
-}
-
-// ──────────────────────────────────────────────────────────
-//  UI — TABS
-// ──────────────────────────────────────────────────────────
-function switchTab(t) {
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-  document.getElementById('tab-' + t).classList.add('active');
-  document.querySelectorAll('.tab-btn')[t === 'rifa' ? 0 : 1].classList.add('active');
-  if (t === 'vendas') renderVendas();
-}
-window.switchTab = switchTab;
-
-// ──────────────────────────────────────────────────────────
-//  UI — GRID
-// ──────────────────────────────────────────────────────────
-const grid = document.getElementById('grid');
-for (let i = 1; i <= TOTAL; i++) {
-  const b = document.createElement('button');
-  b.className = 'num-btn';
-  b.id = 'n' + i;
-  b.textContent = String(i).padStart(3, '0');
-  b.addEventListener('click', () => onNumClick(i));
-  grid.appendChild(b);
-}
-
-function refreshGrid() {
-  for (let i = 1; i <= TOTAL; i++) {
-    const btn = document.getElementById('n' + i);
-    if (btn) btn.classList.toggle('sold', !!sales[i]);
-  }
-}
-
-function updateCounters() {
-  const n = Object.keys(sales).length;
-  safeSetText('sold-count', n);
-  safeSetText('avail-count', TOTAL - n);
-}
-
-// ──────────────────────────────────────────────────────────
-//  UI — MODAL
-// ──────────────────────────────────────────────────────────
-function onNumClick(n) { openModal(n, !!sales[n]); }
-
-function openModal(n, isEdit) {
-  pendingNum = n;
-  const nStr = String(n).padStart(3, '0');
-  safeSetText('modal-title', (isEdit ? '✏ EDITAR Nº ' : 'NÚMERO ') + nStr);
-  safeSetText('modal-sub', isEdit ? 'Edite os dados ou cancele' : 'Preencha os dados do comprador');
-  const d = salesDecrypted[n] || {};
-  document.getElementById('inp-nome').value = d.nome || '';
-  document.getElementById('inp-tel').value  = d.tel  || '';
-  document.getElementById('inp-vendedor').value = d.vendedor || '';
-  document.getElementById('btn-desmarcar').style.display = isEdit ? 'block' : 'none';
-  document.getElementById('modal').classList.add('open');
-  setTimeout(() => document.getElementById('inp-nome').focus(), 100);
-}
-
-function closeModal() {
-  document.getElementById('modal').classList.remove('open');
-  pendingNum = null;
-}
-window.closeModal = closeModal;
-
-async function confirmSale() {
-  if (!_cryptoKey) {
-    showToast("⚠️ Defina a senha de criptografia primeiro (ícone 🔑).", true);
-    return;
-  }
-  const nome     = document.getElementById('inp-nome').value.trim();
-  const tel      = document.getElementById('inp-tel').value.trim();
-  const vendedor = document.getElementById('inp-vendedor').value.trim();
-  if (!nome) { document.getElementById('inp-nome').focus(); return; }
-
-  // Validação básica de entrada
-  if (nome.length > 100 || tel.length > 20 || vendedor.length > 100) {
-    showToast("Dados muito longos.", true); return;
-  }
-
-  showLoading('Salvando...');
-  try {
-    await saveSale(pendingNum, nome, tel, vendedor);
-    const num = pendingNum;
-    closeModal();
-    hideLoading();
-    setTimeout(() => generateTicketImage(num), 200);
-  } catch (e) {
-    hideLoading();
-    console.error(e);
-    showToast("Erro ao salvar. Verifique a conexão.", true);
-  }
-}
-window.confirmSale = confirmSale;
-
-async function unmarkSale() {
-  if (!confirm('Desmarcar número ' + String(pendingNum).padStart(3,'0') + ' como vendido?')) return;
-  showLoading('Removendo...');
-  try {
-    await deleteSale(pendingNum);
-    closeModal();
-    hideLoading();
-  } catch (e) {
-    hideLoading();
-    showToast("Erro ao remover.", true);
-  }
-}
-window.unmarkSale = unmarkSale;
-
-document.getElementById('modal').addEventListener('click', function(e) {
-  if (e.target === this) closeModal();
-});
-
-async function resetAll() {
-  if (!confirm('Limpar TODAS as vendas?\n\nEsta ação não pode ser desfeita.')) return;
-  showLoading('Removendo tudo...');
-  try {
-    const nums = Object.keys(sales);
-    await Promise.all(nums.map(n => deleteSale(Number(n))));
-    hideLoading();
-  } catch(e) {
-    hideLoading();
-    showToast("Erro ao limpar.", true);
-  }
-}
-window.resetAll = resetAll;
-
-// ──────────────────────────────────────────────────────────
-//  UI — SENHA DE CRIPTOGRAFIA
-// ──────────────────────────────────────────────────────────
-const KEY_SESSION = 'crk_rifa_cb'; // chave de sessão (não persiste entre fechamentos)
-
-async function promptEncKey() {
-  // Tenta recuperar da sessão atual
-  const saved = sessionStorage.getItem(KEY_SESSION);
-  if (saved) {
-    try { _cryptoKey = await deriveKey(saved); updateKeyStatus(true); return; } catch {}
-  }
-  openKeyModal();
-}
-
-function openKeyModal() {
-  document.getElementById('key-modal').classList.add('open');
-  setTimeout(() => document.getElementById('inp-enc-key').focus(), 100);
-}
-
-async function confirmKey() {
-  const pw = document.getElementById('inp-enc-key').value;
-  if (!pw || pw.length < 6) {
-    showToast("Senha deve ter ao menos 6 caracteres.", true); return;
-  }
-  showLoading('Derivando chave...');
-  try {
-    _cryptoKey = await deriveKey(pw);
-    sessionStorage.setItem(KEY_SESSION, pw);
-    hideLoading();
-    document.getElementById('key-modal').classList.remove('open');
-    updateKeyStatus(true);
-    // Re-descriptografa tudo com a nova chave
-    await reDecryptAll();
-    renderVendas();
-    showToast("🔑 Chave configurada com sucesso!");
-  } catch(e) {
-    hideLoading();
-    showToast("Erro ao configurar chave.", true);
-  }
-}
-window.confirmKey = confirmKey;
-
-async function reDecryptAll() {
-  salesDecrypted = {};
-  const tasks = Object.entries(sales).map(async ([num, data]) => {
-    const nome = data.nomeEnc ? await decrypt(data.nomeEnc) : (data.nome || '');
-    const tel  = data.telEnc  ? await decrypt(data.telEnc)  : (data.tel  || '');
-    salesDecrypted[Number(num)] = { nome, tel, vendedor: data.vendedor || '', ts: data.ts || '' };
-  });
-  await Promise.all(tasks);
-}
-
-function updateKeyStatus(active) {
-  const btn = document.getElementById('key-btn');
-  if (btn) {
-    btn.title    = active ? 'Chave ativa — clique para trocar' : 'Definir senha de criptografia';
-    btn.style.color = active ? 'var(--gold)' : 'var(--muted)';
-  }
-}
-
-document.getElementById('key-modal').addEventListener('click', function(e) {
-  if (e.target === this) this.classList.remove('open');
-});
-
-document.getElementById('inp-enc-key').addEventListener('keydown', e => {
-  if (e.key === 'Enter') confirmKey();
-});
-
-window.openKeyModal = openKeyModal;
-
-// ──────────────────────────────────────────────────────────
-//  UI — VENDAS
-// ──────────────────────────────────────────────────────────
-function renderVendas() {
-  const q    = document.getElementById('search').value.toLowerCase();
-  const list = document.getElementById('vendas-list');
-  const entries = Object.entries(salesDecrypted)
-    .sort((a, b) => Number(a[0]) - Number(b[0]));
-  const filtered = entries.filter(([n, d]) =>
-    !q
-    || (d.nome     || '').toLowerCase().includes(q)
-    || (d.tel      || '').toLowerCase().includes(q)
-    || (d.vendedor || '').toLowerCase().includes(q)
-    || String(n).padStart(3,'0').includes(q)
-  );
-
-  if (!filtered.length) {
-    // Cria elemento via DOM — sem innerHTML com dados do usuário
-    list.innerHTML = '';
-    const empty = document.createElement('div');
-    empty.className = 'empty-state';
-    const icon = document.createElement('span');
-    icon.textContent = q ? '?' : '0';
-    empty.appendChild(icon);
-    const msg = document.createTextNode(q ? 'Nenhum resultado.' : 'Nenhuma venda registrada ainda.');
-    empty.appendChild(msg);
-    list.appendChild(empty);
-    return;
-  }
-
-  list.innerHTML = '';
-  filtered.forEach(([n, d]) => {
-    const card = document.createElement('div');
-    card.className = 'venda-card';
-    card.addEventListener('click', () => openModalAndSwitch(Number(n)));
-
-    const numDiv = document.createElement('div');
-    numDiv.className = 'venda-num';
-    numDiv.textContent = String(n).padStart(3,'0');
-
-    const info = document.createElement('div');
-    info.className = 'venda-info';
-
-    const nome = document.createElement('div');
-    nome.className = 'venda-nome';
-    nome.textContent = d.nome || '';    // textContent — seguro contra XSS
-
-    const det = document.createElement('div');
-    det.className = 'venda-det';
-    det.textContent = d.tel ? ('📱 ' + d.tel) : 'Sem contato';
-
-    info.appendChild(nome);
-    info.appendChild(det);
-
-    if (d.vendedor) {
-      const vend = document.createElement('div');
-      vend.className = 'venda-vendedor';
-      vend.textContent = 'Vendido por: ' + d.vendedor;
-      info.appendChild(vend);
-    }
-
-    card.appendChild(numDiv);
-    card.appendChild(info);
-    list.appendChild(card);
-  });
-}
-window.renderVendas = renderVendas;
-
-function openModalAndSwitch(n) {
-  switchTab('rifa');
-  setTimeout(() => openModal(n, true), 100);
-}
-
-// ──────────────────────────────────────────────────────────
-//  EXPORT CSV — sem dados criptografados, mostra descriptografado
-// ──────────────────────────────────────────────────────────
-function exportCSV() {
-  if (!_cryptoKey) {
-    showToast("⚠️ Configure a senha antes de exportar.", true); return;
-  }
-  const rows = [['Número','Nome','Contato','Vendedor','Data']];
-  Object.entries(salesDecrypted)
-    .sort((a, b) => Number(a[0]) - Number(b[0]))
-    .forEach(([n, d]) => {
-      rows.push([
-        String(n).padStart(3,'0'),
-        d.nome || '',
-        d.tel  || '',
-        d.vendedor || '',
-        d.ts ? new Date(d.ts).toLocaleString('pt-BR') : ''
-      ]);
-    });
-  // Escapa campos CSV para prevenir CSV Injection
-  const csv = rows
-    .map(r => r.map(v => {
-      const s = String(v);
-      // Previne formula injection no Excel
-      const safe = /^[=+\-@]/.test(s) ? "'" + s : s;
-      return '"' + safe.replace(/"/g, '""') + '"';
-    }).join(','))
-    .join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent('\uFEFF' + csv);
-  a.download = 'rifa_cachorroboros.csv';
-  a.click();
-}
-window.exportCSV = exportCSV;
-
-// ──────────────────────────────────────────────────────────
-//  GERAR TALÃO (imagem) — usa dados descriptografados em memória
-// ──────────────────────────────────────────────────────────
-function generateTicketImage(num) {
-  const d    = salesDecrypted[num] || {};
-  const nStr = String(num).padStart(3,'0');
-  const half = Math.ceil(PRIZES.length / 2);
-  const col1 = PRIZES.slice(0, half);
-  const col2 = PRIZES.slice(half);
-
-  // Constrói o talão via DOM (não innerHTML com dados do usuário)
-  const wrap = document.getElementById('ticket-canvas-wrap');
-  wrap.innerHTML = buildTicketHTML(nStr, d, col1, col2);
-
-  showLoading('Gerando talão...');
-  requestAnimationFrame(() => {
-    html2canvas(document.getElementById('ticket-render'), {
-      scale: 3, backgroundColor: '#ffffff', useCORS: true, logging: false
-    }).then(canvas => {
-      hideLoading();
-      canvas.toBlob(blob => {
-        const url = URL.createObjectURL(blob);
-        const a   = document.createElement('a');
-        a.href     = url;
-        a.download = `talao_${nStr}_cachorroboros.png`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-      }, 'image/png');
-    }).catch(() => { hideLoading(); showToast('Erro ao gerar imagem.', true); });
-  });
-}
-
-function buildTicketHTML(nStr, d, col1, col2) {
-  // Usa esc() em todos os dados do usuário antes de injetar em HTML
-  return `
-  <div class="ticket-img" id="ticket-render">
-    <div class="ticket-stub">
-      <div class="stub-label">Nº</div>
-      <div class="stub-num">${esc(nStr)}</div>
-      <div class="stub-fields" style="margin-top:12px">
-        <div class="stub-field-label">Nome</div>
-        <div class="stub-field-val">${esc(d.nome || '')}</div>
-        <div class="stub-field-label">Contato</div>
-        <div class="stub-field-val">${esc(d.tel || '')}</div>
-        <div class="stub-vendedor">Vendido por: ${esc(d.vendedor || '—')}</div>
-      </div>
-    </div>
-    <div class="ticket-body">
-      <div class="ticket-header">
-        <div class="th-clan">CACHORROBOROS</div>
-        <div class="th-meta">
-          <div class="th-num">Nº ${esc(nStr)}</div>
-          <div>R$ 5,00 &nbsp;|&nbsp; 20/07</div>
-        </div>
-      </div>
-      <div class="ticket-prize">
-        <div class="prize-title">KIT CHURRASCO</div>
-        <div class="prize-cols">
-          <div class="prize-col">${col1.map(i => `<div class="prize-item-t">${esc(i)}</div>`).join('')}</div>
-          <div class="prize-col">${col2.map(i => `<div class="prize-item-t">${esc(i)}</div>`).join('')}</div>
-        </div>
-      </div>
-      <div class="ticket-footer">
-        <div class="tf-pix">Pix: <strong>cachorroboros@gmail.com</strong></div>
-        <div class="tf-sorteio">Sorteio 20/07</div>
-      </div>
-    </div>
-  </div>`;
-}
-
-// ──────────────────────────────────────────────────────────
-//  GERAR IMAGEM DE DIVULGAÇÃO
-// ──────────────────────────────────────────────────────────
-function generateShareGrid() {
-  const soldSet = new Set(Object.keys(sales).map(Number));
-  const soldN   = soldSet.size;
-  const availN  = TOTAL - soldN;
-  const cells   = [];
-  for (let i = 1; i <= TOTAL; i++) {
-    cells.push(`<div class="sg-num ${soldSet.has(i) ? 'so' : 'av'}">${String(i).padStart(3,'0')}</div>`);
-  }
-  const wrap = document.getElementById('share-grid-canvas-wrap');
-  wrap.innerHTML = `
-  <div class="share-grid-img" id="sg-render">
-    <div class="sg-header">
-      <div class="sg-clan">CLÃ DE BOFFERING</div>
-      <div class="sg-title">RIFA <span>CACHORROBOROS</span></div>
-      <div class="sg-subtitle">Kit Churrasco — 20 de Julho</div>
-    </div>
-    <div class="sg-prizes">${PRIZES.map(p => `<div class="sg-prize">${esc(p)}</div>`).join('')}</div>
-    <div class="sg-info">
-      <div class="sg-info-item"><div class="sg-info-label">Valor</div><div class="sg-info-val em">R$ 5,00</div></div>
-      <div class="sg-info-item"><div class="sg-info-label">Total</div><div class="sg-info-val">200</div></div>
-      <div class="sg-info-item"><div class="sg-info-label">Vendidos</div><div class="sg-info-val em">${soldN}</div></div>
-      <div class="sg-info-item"><div class="sg-info-label">Disponíveis</div><div class="sg-info-val go">${availN}</div></div>
-    </div>
-    <div class="sg-grid">${cells.join('')}</div>
-    <div class="sg-pix">Pix: <strong>cachorroboros@gmail.com</strong></div>
-    <div class="sg-footer">TOQUE NO NÚMERO PARA GARANTIR O SEU</div>
-  </div>`;
-
-  showLoading('Gerando imagem de divulgação...');
-  requestAnimationFrame(() => {
-    html2canvas(document.getElementById('sg-render'), {
-      scale: 2, backgroundColor: '#0d0d0d', useCORS: true, logging: false
-    }).then(canvas => {
-      hideLoading();
-      canvas.toBlob(blob => {
-        const url = URL.createObjectURL(blob);
-        const a   = document.createElement('a');
-        a.href     = url;
-        a.download = 'divulgacao_rifa_cachorroboros.png';
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 3000);
-      }, 'image/png');
-    }).catch(() => { hideLoading(); showToast('Erro ao gerar imagem.', true); });
-  });
-}
-window.generateShareGrid = generateShareGrid;
-
-// ──────────────────────────────────────────────────────────
-//  HELPERS UI
-// ──────────────────────────────────────────────────────────
-function showLoading(t) {
-  safeSetText('loading-text', t || 'Gerando...');
-  document.getElementById('loading').classList.add('open');
-}
-function hideLoading() {
-  document.getElementById('loading').classList.remove('open');
-}
-
-let toastTimer;
-function showToast(msg, isError) {
-  const t = document.getElementById('toast');
-  safeSetText('toast', msg);
-  t.className = 'toast open' + (isError ? ' error' : '');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('open'), 3500);
-}
-
-// ──────────────────────────────────────────────────────────
-//  INIT
-// ──────────────────────────────────────────────────────────
-initFirebase().then(() => promptEncKey());
-</script>
-
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;600;700&family=Barlow+Condensed:wght@700;900&display=swap');
 
@@ -659,15 +22,11 @@ initFirebase().then(() => promptEncKey());
   .tab-panel { display: none; } .tab-panel.active { display: block; }
 
   /* HEADER */
-  header { background: var(--charcoal); padding: 18px 16px 14px; text-align: center; position: relative; }
+  header { background: var(--charcoal); padding: 18px 16px 14px; text-align: center; }
   .clan-tag { font-family:'Barlow Condensed',sans-serif; font-weight:900; font-size:10px; letter-spacing:5px; color:var(--ember); margin-bottom:4px; }
   h1 { font-family:'Bebas Neue',sans-serif; font-size:clamp(36px,8vw,64px); letter-spacing:3px; line-height:1; }
   h1 span { color:var(--ember); }
   .subtitle { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:clamp(11px,3vw,17px); letter-spacing:4px; color:var(--gold); margin-top:4px; }
-
-  /* KEY BUTTON */
-  #key-btn { position:absolute; top:14px; right:14px; background:transparent; border:1px solid var(--ash); border-radius:50%; width:34px; height:34px; font-size:16px; cursor:pointer; color:var(--muted); transition:color .2s,border-color .2s; display:flex; align-items:center; justify-content:center; }
-  #key-btn:hover { border-color:var(--gold); color:var(--gold); }
 
   /* PRIZE BAR */
   .prize-bar { display:flex; flex-wrap:wrap; justify-content:center; gap:4px 12px; background:var(--smoke); padding:10px 14px; border-bottom:1px solid var(--ash); }
@@ -734,16 +93,6 @@ initFirebase().then(() => promptEncKey());
   .btn-desmarcar { margin-top:10px; width:100%; background:transparent; border:1px solid var(--ash); color:var(--muted); font-family:'Barlow',sans-serif; font-size:10px; font-weight:600; letter-spacing:2px; text-transform:uppercase; padding:7px 14px; border-radius:4px; cursor:pointer; transition:border-color .2s,color .2s; }
   .btn-desmarcar:hover { border-color:var(--ember); color:var(--ember); }
 
-  /* KEY MODAL */
-  .key-modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.88); z-index:200; align-items:center; justify-content:center; padding:16px; }
-  .key-modal-overlay.open { display:flex; }
-  .key-modal { background:var(--charcoal); border:1px solid var(--ash); border-top:3px solid var(--gold); border-radius:8px; padding:22px 18px 18px; width:100%; max-width:340px; }
-  .key-modal h2 { font-family:'Bebas Neue',sans-serif; font-size:20px; letter-spacing:2px; color:var(--gold); margin-bottom:6px; }
-  .key-modal p { font-size:11px; color:var(--muted); margin-bottom:16px; line-height:1.5; }
-  .key-modal input { width:100%; background:var(--smoke); border:1px solid var(--ash); border-radius:4px; color:var(--white); font-family:'Barlow',sans-serif; font-size:14px; padding:8px 11px; outline:none; margin-bottom:12px; transition:border-color .2s; }
-  .key-modal input:focus { border-color:var(--gold); }
-  .btn-key-confirm { width:100%; background:var(--gold); border:none; border-radius:4px; color:var(--black); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; letter-spacing:2px; text-transform:uppercase; padding:10px; cursor:pointer; }
-
   /* VENDAS */
   .vendas-wrap { padding:14px 12px; max-width:680px; margin:0 auto; }
   .vendas-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px; }
@@ -767,9 +116,14 @@ initFirebase().then(() => promptEncKey());
   #ticket-canvas-wrap { position:fixed; left:-9999px; top:0; }
   #share-grid-canvas-wrap { position:fixed; left:-9999px; top:0; }
 
-  /* TALÃO */
-  .ticket-img { width:520px; background:#fff; display:flex; border:2px solid #111; font-family:'Barlow',sans-serif; }
-  .ticket-stub { width:160px; min-width:160px; background:#e0e0e0; display:flex; flex-direction:column; align-items:center; padding:10px 6px; border-right:2px dashed #999; position:relative; }
+  /* TALÃO PARA IMAGEM */
+  .ticket-img {
+    width: 520px; background:#fff; display:flex; border:2px solid #111; font-family:'Barlow',sans-serif;
+  }
+  .ticket-stub {
+    width:160px; min-width:160px; background:#e0e0e0; display:flex; flex-direction:column; align-items:center;
+    padding:10px 6px; border-right:2px dashed #999; position:relative;
+  }
   .stub-num { font-family:'Bebas Neue',sans-serif; font-size:32px; color:#111; line-height:1; }
   .stub-label { font-size:9px; font-weight:700; letter-spacing:2px; color:#555; text-transform:uppercase; margin-bottom:8px; }
   .stub-fields { width:100%; margin-top:auto; }
@@ -793,7 +147,9 @@ initFirebase().then(() => promptEncKey());
   .tf-sorteio { font-family:'Bebas Neue',sans-serif; font-size:13px; color:#e8420a; letter-spacing:1px; }
 
   /* SHARE GRID */
-  .share-grid-img { width:800px; background:#0d0d0d; padding:24px 20px 20px; font-family:'Barlow',sans-serif; }
+  .share-grid-img {
+    width:800px; background:#0d0d0d; padding:24px 20px 20px; font-family:'Barlow',sans-serif;
+  }
   .sg-header { text-align:center; margin-bottom:14px; }
   .sg-clan { font-size:10px; font-weight:700; letter-spacing:5px; color:#e8420a; margin-bottom:4px; }
   .sg-title { font-family:'Bebas Neue',sans-serif; font-size:48px; letter-spacing:3px; color:#f2f0eb; line-height:1; }
@@ -821,11 +177,6 @@ initFirebase().then(() => promptEncKey());
   .loading-spinner { width:40px; height:40px; border:3px solid var(--ash); border-top-color:var(--ember); border-radius:50%; animation:spin .8s linear infinite; }
   @keyframes spin { to { transform:rotate(360deg); } }
   .loading-text { font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; letter-spacing:3px; color:var(--white); }
-
-  /* TOAST */
-  .toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(80px); background:var(--smoke); border:1px solid var(--ash); border-radius:6px; color:var(--white); font-size:13px; padding:10px 18px; z-index:300; transition:transform .3s; white-space:nowrap; pointer-events:none; }
-  .toast.open { transform:translateX(-50%) translateY(0); }
-  .toast.error { border-color:var(--ember); color:var(--ember); }
 </style>
 </head>
 <body>
@@ -841,7 +192,6 @@ initFirebase().then(() => promptEncKey());
     <div class="clan-tag">Clã de Boffering</div>
     <h1>RIFA <span>CACHORROBOROS</span></h1>
     <div class="subtitle">Kit Churrasco — 20 de Julho</div>
-    <button id="key-btn" onclick="openKeyModal()" title="Definir senha de criptografia">🔑</button>
   </header>
   <div class="prize-bar">
     <div class="prize-item">Picanha Estrela</div>
@@ -893,32 +243,20 @@ initFirebase().then(() => promptEncKey());
   </div>
 </div>
 
-<!-- MODAL VENDA -->
+<!-- MODAL -->
 <div class="modal-overlay" id="modal">
   <div class="modal">
     <div class="modal-title" id="modal-title">NÚMERO 001</div>
     <div class="modal-sub" id="modal-sub">Preencha os dados do comprador</div>
     <div class="pix-hint">Pix para pagamento:<strong>cachorroboros@gmail.com</strong></div>
-    <div class="field"><label>Nome do Comprador</label><input id="inp-nome" type="text" maxlength="100" placeholder="Nome completo"/></div>
-    <div class="field"><label>Contato (WhatsApp / Telefone)</label><input id="inp-tel" type="text" maxlength="20" placeholder="(xx) xxxxx-xxxx"/></div>
-    <div class="field"><label>Vendedor</label><input id="inp-vendedor" type="text" maxlength="100" placeholder="Nome do vendedor"/></div>
+    <div class="field"><label>Nome do Comprador</label><input id="inp-nome" type="text" placeholder="Nome completo"/></div>
+    <div class="field"><label>Contato (WhatsApp / Telefone)</label><input id="inp-tel" type="text" placeholder="(xx) xxxxx-xxxx"/></div>
+    <div class="field"><label>Vendedor</label><input id="inp-vendedor" type="text" placeholder="Nome do vendedor"/></div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
       <button class="btn-confirm" onclick="confirmSale()">Confirmar Venda</button>
     </div>
     <button class="btn-desmarcar" id="btn-desmarcar" style="display:none" onclick="unmarkSale()">Desmarcar como vendido</button>
-  </div>
-</div>
-
-<!-- MODAL CHAVE DE CRIPTOGRAFIA -->
-<div class="key-modal-overlay" id="key-modal">
-  <div class="key-modal">
-    <h2>🔑 Senha de Criptografia</h2>
-    <p>Esta senha criptografa os nomes e telefones antes de salvar no banco.<br>
-    <strong>Guarde bem</strong> — sem ela, os dados não podem ser lidos.<br>
-    Não precisa ser lembrada toda vez (fica na sessão).</p>
-    <input id="inp-enc-key" type="password" placeholder="Mínimo 6 caracteres" maxlength="128"/>
-    <button class="btn-key-confirm" onclick="confirmKey()">Confirmar</button>
   </div>
 </div>
 
@@ -928,12 +266,253 @@ initFirebase().then(() => promptEncKey());
   <div class="loading-text" id="loading-text">Gerando imagem...</div>
 </div>
 
-<!-- TOAST -->
-<div class="toast" id="toast"></div>
-
-<!-- CANVAS OCULTOS -->
+<!-- TALÃO OCULTO PARA CAPTURA -->
 <div id="ticket-canvas-wrap"></div>
 <div id="share-grid-canvas-wrap"></div>
 
+<script>
+const TOTAL = 200;
+const KEY = 'cachorroboros_sales';
+const PRIZES = ['Picanha Estrela','Linguiça Toscana','Filé de Costela','Queijo Coalho','Pão de Alho','Pão Doce de Leite','Bolsa Térmica'];
+
+function loadSales(){ try{ return JSON.parse(localStorage.getItem(KEY)||'{}'); }catch{ return {}; } }
+function saveSales(o){ localStorage.setItem(KEY, JSON.stringify(o)); }
+
+let sales = loadSales();
+let pendingNum = null;
+
+function switchTab(t){
+  document.querySelectorAll('.tab-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('tab-'+t).classList.add('active');
+  document.querySelectorAll('.tab-btn')[t==='rifa'?0:1].classList.add('active');
+  if(t==='vendas') renderVendas();
+}
+
+function updateCounters(){
+  const n = Object.keys(sales).length;
+  document.getElementById('sold-count').textContent = n;
+  document.getElementById('avail-count').textContent = TOTAL - n;
+}
+
+// BUILD GRID
+const grid = document.getElementById('grid');
+for(let i=1;i<=TOTAL;i++){
+  const b = document.createElement('button');
+  b.className='num-btn'+(sales[i]?' sold':'');
+  b.id='n'+i;
+  b.textContent=String(i).padStart(3,'0');
+  b.onclick=()=>onNumClick(i);
+  grid.appendChild(b);
+}
+updateCounters();
+
+function onNumClick(n){ openModal(n, !!sales[n]); }
+
+function openModal(n, isEdit){
+  pendingNum = n;
+  document.getElementById('modal-title').textContent=(isEdit?'✏ EDITAR Nº ':'NÚMERO ')+String(n).padStart(3,'0');
+  document.getElementById('modal-sub').textContent=isEdit?'Edite os dados ou cancele':'Preencha os dados do comprador';
+  const d = sales[n]||{};
+  document.getElementById('inp-nome').value=d.nome||'';
+  document.getElementById('inp-tel').value=d.tel||'';
+  document.getElementById('inp-vendedor').value=d.vendedor||'';
+  document.getElementById('btn-desmarcar').style.display=isEdit?'block':'none';
+  document.getElementById('modal').classList.add('open');
+  setTimeout(()=>document.getElementById('inp-nome').focus(),100);
+}
+function closeModal(){ document.getElementById('modal').classList.remove('open'); pendingNum=null; }
+
+function confirmSale(){
+  const nome=document.getElementById('inp-nome').value.trim();
+  const tel=document.getElementById('inp-tel').value.trim();
+  const vendedor=document.getElementById('inp-vendedor').value.trim();
+  if(!nome){ document.getElementById('inp-nome').focus(); return; }
+  sales[pendingNum]={nome,tel,vendedor,ts:new Date().toISOString()};
+  saveSales(sales);
+  document.getElementById('n'+pendingNum).classList.add('sold');
+  updateCounters();
+  const num = pendingNum;
+  closeModal();
+  setTimeout(()=>generateTicketImage(num), 200);
+}
+
+function unmarkSale(){
+  if(!confirm('Desmarcar número '+String(pendingNum).padStart(3,'0')+' como vendido?')) return;
+  delete sales[pendingNum];
+  saveSales(sales);
+  document.getElementById('n'+pendingNum).classList.remove('sold');
+  updateCounters();
+  closeModal();
+}
+
+document.getElementById('modal').addEventListener('click',function(e){ if(e.target===this) closeModal(); });
+function resetAll(){
+  if(!confirm('Limpar TODAS as vendas?')) return;
+  sales={}; saveSales(sales);
+  document.querySelectorAll('.num-btn').forEach(b=>b.classList.remove('sold'));
+  updateCounters();
+}
+
+// ── GERAR TALÃO COMO IMAGEM ────────────────────────────────────────────
+function generateTicketImage(num){
+  const d = sales[num]||{};
+  const nStr = String(num).padStart(3,'0');
+  const half = Math.ceil(PRIZES.length/2);
+  const col1 = PRIZES.slice(0,half);
+  const col2 = PRIZES.slice(half);
+
+  const wrap = document.getElementById('ticket-canvas-wrap');
+  wrap.innerHTML = `
+  <div class="ticket-img" id="ticket-render">
+    <div class="ticket-stub">
+      <div class="stub-label">Nº</div>
+      <div class="stub-num">${nStr}</div>
+      <div class="stub-fields" style="margin-top:12px">
+        <div class="stub-field-label">Nome</div>
+        <div class="stub-field-val">${esc(d.nome||'')}</div>
+        <div class="stub-field-label">Contato</div>
+        <div class="stub-field-val">${esc(d.tel||'')}</div>
+        <div class="stub-vendedor">Vendido por: ${esc(d.vendedor||'—')}</div>
+      </div>
+    </div>
+    <div class="ticket-body">
+      <div class="ticket-header">
+        <div class="th-clan">CACHORROBOROS</div>
+        <div class="th-meta">
+          <div class="th-num">Nº ${nStr}</div>
+          <div>R$ 5,00 &nbsp;|&nbsp; 20/07</div>
+        </div>
+      </div>
+      <div class="ticket-prize">
+        <div class="prize-title">KIT CHURRASCO</div>
+        <div class="prize-cols">
+          <div class="prize-col">${col1.map(i=>`<div class="prize-item-t">${i}</div>`).join('')}</div>
+          <div class="prize-col">${col2.map(i=>`<div class="prize-item-t">${i}</div>`).join('')}</div>
+        </div>
+      </div>
+      <div class="ticket-footer">
+        <div class="tf-pix">Pix: <strong>cachorroboros@gmail.com</strong></div>
+        <div class="tf-sorteio">Sorteio 20/07</div>
+      </div>
+    </div>
+  </div>`;
+
+  showLoading('Gerando talão...');
+  requestAnimationFrame(()=>{
+    html2canvas(document.getElementById('ticket-render'),{
+      scale:3, backgroundColor:'#ffffff', useCORS:true, logging:false
+    }).then(canvas=>{
+      hideLoading();
+      canvas.toBlob(blob=>{
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `talao_${nStr}_cachorroboros.png`;
+        a.click();
+        setTimeout(()=>URL.revokeObjectURL(url),3000);
+      },'image/png');
+    }).catch(()=>{ hideLoading(); alert('Erro ao gerar imagem.'); });
+  });
+}
+
+// ── GERAR IMAGEM DE DIVULGAÇÃO ─────────────────────────────────────────
+function generateShareGrid(){
+  const soldSet = new Set(Object.keys(sales).map(Number));
+  const soldN = soldSet.size;
+  const availN = TOTAL - soldN;
+
+  const cells = [];
+  for(let i=1;i<=TOTAL;i++){
+    cells.push(`<div class="sg-num ${soldSet.has(i)?'so':'av'}">${String(i).padStart(3,'0')}</div>`);
+  }
+
+  const half = Math.ceil(PRIZES.length/2);
+
+  const wrap = document.getElementById('share-grid-canvas-wrap');
+  wrap.innerHTML = `
+  <div class="share-grid-img" id="sg-render">
+    <div class="sg-header">
+      <div class="sg-clan">CLÃ DE BOFFERING</div>
+      <div class="sg-title">RIFA <span>CACHORROBOROS</span></div>
+      <div class="sg-subtitle">Kit Churrasco — 20 de Julho</div>
+    </div>
+    <div class="sg-prizes">
+      ${PRIZES.map(p=>`<div class="sg-prize">${p}</div>`).join('')}
+    </div>
+    <div class="sg-info">
+      <div class="sg-info-item"><div class="sg-info-label">Valor</div><div class="sg-info-val em">R$ 5,00</div></div>
+      <div class="sg-info-item"><div class="sg-info-label">Total</div><div class="sg-info-val">200</div></div>
+      <div class="sg-info-item"><div class="sg-info-label">Vendidos</div><div class="sg-info-val em">${soldN}</div></div>
+      <div class="sg-info-item"><div class="sg-info-label">Disponíveis</div><div class="sg-info-val go">${availN}</div></div>
+    </div>
+    <div class="sg-grid">${cells.join('')}</div>
+    <div class="sg-pix">Pix: <strong>cachorroboros@gmail.com</strong></div>
+    <div class="sg-footer">TOQUE NO NÚMERO PARA GARANTIR O SEU</div>
+  </div>`;
+
+  showLoading('Gerando imagem de divulgação...');
+  requestAnimationFrame(()=>{
+    html2canvas(document.getElementById('sg-render'),{
+      scale:2, backgroundColor:'#0d0d0d', useCORS:true, logging:false
+    }).then(canvas=>{
+      hideLoading();
+      canvas.toBlob(blob=>{
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'divulgacao_rifa_cachorroboros.png';
+        a.click();
+        setTimeout(()=>URL.revokeObjectURL(url),3000);
+      },'image/png');
+    }).catch(()=>{ hideLoading(); alert('Erro ao gerar imagem.'); });
+  });
+}
+
+function showLoading(t){ document.getElementById('loading-text').textContent=t||'Gerando...'; document.getElementById('loading').classList.add('open'); }
+function hideLoading(){ document.getElementById('loading').classList.remove('open'); }
+
+// ── VENDAS ─────────────────────────────────────────────────────────────
+function renderVendas(){
+  const q = document.getElementById('search').value.toLowerCase();
+  const list = document.getElementById('vendas-list');
+  const entries = Object.entries(sales).sort((a,b)=>Number(a[0])-Number(b[0]));
+  const filtered = entries.filter(([n,d])=>
+    !q||d.nome.toLowerCase().includes(q)||(d.tel||'').toLowerCase().includes(q)||
+    (d.vendedor||'').toLowerCase().includes(q)||String(n).padStart(3,'0').includes(q)
+  );
+  if(!filtered.length){
+    list.innerHTML=`<div class="empty-state"><span>${q?'?':'0'}</span>${q?'Nenhum resultado.':'Nenhuma venda registrada ainda.'}</div>`;
+    return;
+  }
+  list.innerHTML=filtered.map(([n,d])=>`
+    <div class="venda-card" onclick="openModalAndSwitch(${n})">
+      <div class="venda-num">${String(n).padStart(3,'0')}</div>
+      <div class="venda-info">
+        <div class="venda-nome">${esc(d.nome)}</div>
+        <div class="venda-det">${d.tel?'📱 '+esc(d.tel):'Sem contato'}</div>
+        ${d.vendedor?`<div class="venda-vendedor">Vendido por: ${esc(d.vendedor)}</div>`:''}
+      </div>
+    </div>`).join('');
+}
+
+function openModalAndSwitch(n){
+  switchTab('rifa');
+  setTimeout(()=>openModal(n,true),100);
+}
+
+function exportCSV(){
+  const rows=[['Número','Nome','Contato','Vendedor','Data']];
+  Object.entries(sales).sort((a,b)=>Number(a[0])-Number(b[0])).forEach(([n,d])=>{
+    rows.push([String(n).padStart(3,'0'),d.nome,d.tel||'',d.vendedor||'',d.ts?new Date(d.ts).toLocaleString('pt-BR'):'']);
+  });
+  const csv=rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
+  const a=document.createElement('a');
+  a.href='data:text/csv;charset=utf-8,'+encodeURIComponent('\uFEFF'+csv);
+  a.download='rifa_cachorroboros.csv'; a.click();
+}
+
+function esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+</script>
 </body>
 </html>
