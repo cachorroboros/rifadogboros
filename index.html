@@ -92,6 +92,16 @@
   .field input::placeholder { color:var(--ash); }
   .pix-hint { background:var(--smoke); border:1px solid var(--ash); border-radius:4px; padding:8px 11px; margin-bottom:14px; font-size:11px; color:var(--muted); text-align:center; }
   .pix-hint strong { color:var(--gold); display:block; font-size:13px; margin-top:2px; }
+
+  .pago-field { margin-bottom:10px; }
+  .pago-check-label { display:flex; align-items:center; gap:9px; cursor:pointer; font-size:9px; font-weight:700; letter-spacing:2px; color:var(--muted); text-transform:uppercase; margin-bottom:0; }
+  .pago-check-label input[type="checkbox"] { width:18px; height:18px; accent-color:var(--ember); cursor:pointer; flex-shrink:0; }
+  .pago-check-label span { color:var(--white); font-size:13px; letter-spacing:.5px; text-transform:none; font-weight:600; }
+  .pagamento-options { display:flex; gap:10px; }
+  .pagamento-opt { flex:1; display:flex; align-items:center; gap:7px; background:var(--smoke); border:1px solid var(--ash); border-radius:4px; padding:9px 11px; font-size:13px; color:var(--white); cursor:pointer; transition:border-color .2s; text-transform:none; letter-spacing:.3px; font-weight:500; }
+  .pagamento-opt:has(input:checked) { border-color:var(--ember); background:rgba(232,66,10,.1); }
+  .pagamento-opt input[type="radio"] { accent-color:var(--ember); cursor:pointer; }
+
   .modal-actions { display:flex; gap:8px; margin-top:16px; }
   .btn-confirm { flex:1; background:var(--ember); border:none; border-radius:4px; color:var(--white); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:14px; letter-spacing:2px; text-transform:uppercase; padding:10px; cursor:pointer; transition:background .2s; }
   .btn-confirm:hover { background:#c73509; }
@@ -114,10 +124,25 @@
   .venda-nome { font-weight:700; font-size:14px; }
   .venda-det { font-size:11px; color:var(--muted); margin-top:2px; }
   .venda-vendedor { font-size:10px; color:var(--gold); margin-top:2px; font-weight:600; letter-spacing:1px; }
+  .pago-badge { font-size:9px; font-weight:700; letter-spacing:1px; text-transform:uppercase; padding:3px 8px; border-radius:10px; white-space:nowrap; flex-shrink:0; }
+  .pago-badge.pago { background:rgba(46,160,67,.15); border:1px solid #2ea043; color:#5fd576; }
+  .pago-badge.pendente { background:rgba(232,66,10,.1); border:1px solid var(--ember); color:#ff9d7a; }
   .empty-state { text-align:center; padding:48px 20px; color:var(--muted); font-size:13px; letter-spacing:1px; }
   .empty-state span { font-family:'Bebas Neue',sans-serif; font-size:36px; display:block; color:var(--ash); margin-bottom:8px; }
   .export-btn { background:transparent; border:1px solid var(--gold); color:var(--gold); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:11px; letter-spacing:2px; text-transform:uppercase; padding:7px 12px; border-radius:4px; cursor:pointer; transition:background .2s,color .2s; }
   .export-btn:hover { background:var(--gold); color:var(--black); }
+
+  /* ── RANKING DE VENDEDORES ──────────────────────────────────────── */
+  .vendedores-panel { background:var(--charcoal); border:1px solid var(--ash); border-top:3px solid var(--gold); border-radius:6px; padding:14px 15px; margin-bottom:16px; }
+  .vendedores-panel-title { font-family:'Bebas Neue',sans-serif; font-size:16px; letter-spacing:2px; color:var(--gold); margin-bottom:10px; }
+  .vendedor-row { display:flex; align-items:center; gap:10px; padding:7px 0; border-bottom:1px solid var(--ash); }
+  .vendedor-row:last-child { border-bottom:none; }
+  .vendedor-rank { font-family:'Bebas Neue',sans-serif; font-size:15px; color:var(--muted); min-width:20px; }
+  .vendedor-nome { flex:1; font-size:13px; font-weight:600; color:var(--white); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .vendedor-bar-wrap { flex:2; background:var(--smoke); border-radius:3px; height:7px; overflow:hidden; min-width:60px; }
+  .vendedor-bar { height:100%; background:linear-gradient(90deg,var(--ember),var(--gold)); border-radius:3px; }
+  .vendedor-count { font-family:'Bebas Neue',sans-serif; font-size:16px; color:var(--ember); min-width:34px; text-align:right; }
+  .vendedor-pago-info { font-size:9px; color:var(--muted); min-width:58px; text-align:right; letter-spacing:.5px; }
 
   /* TICKET CANVAS (hidden) */
   #ticket-canvas-wrap { position:fixed; left:-9999px; top:0; }
@@ -306,6 +331,7 @@
       <div class="vendas-titulo">VENDAS REGISTRADAS</div>
       <button class="export-btn" onclick="exportCSV()">⬇ CSV</button>
     </div>
+    <div id="vendedores-panel"></div>
     <input class="search-box" id="search" placeholder="Buscar por nome, contato, vendedor ou nº..." oninput="renderVendas()">
     <div id="vendas-list"></div>
   </div>
@@ -320,6 +346,19 @@
     <div class="field"><label>Nome do Comprador</label><input id="inp-nome" type="text" placeholder="Nome completo"/></div>
     <div class="field"><label>Contato (WhatsApp / Telefone)</label><input id="inp-tel" type="text" placeholder="(xx) xxxxx-xxxx"/></div>
     <div class="field"><label>Vendedor</label><input id="inp-vendedor" type="text" placeholder="Nome do vendedor"/></div>
+    <div class="field pago-field">
+      <label class="pago-check-label">
+        <input type="checkbox" id="inp-pago" onchange="togglePagoFields()"/>
+        <span>Pagamento recebido</span>
+      </label>
+    </div>
+    <div class="field" id="forma-pagamento-wrap" style="display:none">
+      <label>Forma de Pagamento</label>
+      <div class="pagamento-options">
+        <label class="pagamento-opt"><input type="radio" name="forma-pagamento" value="dinheiro"/> Dinheiro</label>
+        <label class="pagamento-opt"><input type="radio" name="forma-pagamento" value="pix"/> Pix</label>
+      </div>
+    </div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">Cancelar</button>
       <button class="btn-confirm" onclick="confirmSale()">Confirmar Venda</button>
@@ -513,11 +552,19 @@ function openModal(n, isEdit){
   document.getElementById('inp-nome').value=d.nome||'';
   document.getElementById('inp-tel').value=d.tel||'';
   document.getElementById('inp-vendedor').value=d.vendedor||(currentUser?currentUser.email:'');
+  document.getElementById('inp-pago').checked = !!d.pago;
+  document.querySelectorAll('input[name="forma-pagamento"]').forEach(r=>{ r.checked = (r.value === d.formaPagamento); });
+  togglePagoFields();
   document.getElementById('btn-desmarcar').style.display=isEdit?'block':'none';
   document.getElementById('modal').classList.add('open');
   setTimeout(()=>document.getElementById('inp-nome').focus(),100);
 }
 function closeModal(){ document.getElementById('modal').classList.remove('open'); pendingNum=null; }
+
+function togglePagoFields(){
+  const pago = document.getElementById('inp-pago').checked;
+  document.getElementById('forma-pagamento-wrap').style.display = pago ? 'block' : 'none';
+}
 
 function confirmSale(){
   if(!requireLogin()) return;
@@ -525,9 +572,12 @@ function confirmSale(){
   const tel=document.getElementById('inp-tel').value.trim();
   const vendedor=document.getElementById('inp-vendedor').value.trim();
   if(!nome){ document.getElementById('inp-nome').focus(); return; }
+  const pago = document.getElementById('inp-pago').checked;
+  const formaSelecionada = document.querySelector('input[name="forma-pagamento"]:checked');
+  const formaPagamento = pago ? (formaSelecionada ? formaSelecionada.value : '') : '';
   const num = pendingNum;
   const data = {
-    nome, tel, vendedor,
+    nome, tel, vendedor, pago, formaPagamento,
     ts: new Date().toISOString(),
     registradoPor: currentUser.email
   };
@@ -686,10 +736,13 @@ function hideLoading(){ document.getElementById('loading').classList.remove('ope
 // ── VENDAS ─────────────────────────────────────────────────────────────
 function renderVendas(){
   const list = document.getElementById('vendas-list');
+  const panel = document.getElementById('vendedores-panel');
   if(!currentUser){
     list.innerHTML = `<div class="locked-msg"><span>🔒</span>Área restrita.<br>Faça login para ver os dados dos compradores.<br><button onclick="openLoginScreen()">Fazer login</button></div>`;
+    panel.innerHTML = '';
     return;
   }
+  renderVendedoresPanel();
   const q = document.getElementById('search').value.toLowerCase();
   const entries = Object.entries(sales).sort((a,b)=>Number(a[0])-Number(b[0]));
   const filtered = entries.filter(([n,d])=>
@@ -700,7 +753,11 @@ function renderVendas(){
     list.innerHTML=`<div class="empty-state"><span>${q?'?':'0'}</span>${q?'Nenhum resultado.':'Nenhuma venda registrada ainda.'}</div>`;
     return;
   }
-  list.innerHTML=filtered.map(([n,d])=>`
+  list.innerHTML=filtered.map(([n,d])=>{
+    const pagoBadge = d.pago
+      ? `<span class="pago-badge pago">✓ ${d.formaPagamento==='pix'?'Pix':'Dinheiro'}</span>`
+      : `<span class="pago-badge pendente">Pendente</span>`;
+    return `
     <div class="venda-card" onclick="openModalAndSwitch(${n})">
       <div class="venda-num">${String(n).padStart(3,'0')}</div>
       <div class="venda-info">
@@ -708,7 +765,40 @@ function renderVendas(){
         <div class="venda-det">${d.tel?'📱 '+esc(d.tel):'Sem contato'}</div>
         ${d.vendedor?`<div class="venda-vendedor">Vendido por: ${esc(d.vendedor)}</div>`:''}
       </div>
-    </div>`).join('');
+      ${pagoBadge}
+    </div>`;
+  }).join('');
+}
+
+function renderVendedoresPanel(){
+  const panel = document.getElementById('vendedores-panel');
+  const entries = Object.values(sales);
+  if(!entries.length){ panel.innerHTML = ''; return; }
+
+  const counts = {};
+  entries.forEach(d=>{
+    const nome = (d.vendedor||'').trim() || 'Sem vendedor';
+    if(!counts[nome]) counts[nome] = { total:0, pagos:0 };
+    counts[nome].total++;
+    if(d.pago) counts[nome].pagos++;
+  });
+
+  const rows = Object.entries(counts).sort((a,b)=>b[1].total-a[1].total);
+  const max = rows[0][1].total;
+
+  panel.innerHTML = `
+    <div class="vendedores-panel">
+      <div class="vendedores-panel-title">RANKING DE VENDEDORES</div>
+      ${rows.map(([nome,c],i)=>`
+        <div class="vendedor-row">
+          <div class="vendedor-rank">${i+1}º</div>
+          <div class="vendedor-nome">${esc(nome)}</div>
+          <div class="vendedor-bar-wrap"><div class="vendedor-bar" style="width:${(c.total/max*100)}%"></div></div>
+          <div class="vendedor-count">${c.total}</div>
+          <div class="vendedor-pago-info">${c.pagos}/${c.total} pago${c.pagos===1?'':'s'}</div>
+        </div>
+      `).join('')}
+    </div>`;
 }
 
 function openModalAndSwitch(n){
@@ -719,9 +809,14 @@ function openModalAndSwitch(n){
 
 function exportCSV(){
   if(!requireLogin()) return;
-  const rows=[['Número','Nome','Contato','Vendedor','Data']];
+  const rows=[['Número','Nome','Contato','Vendedor','Pago','Forma de Pagamento','Data']];
   Object.entries(sales).sort((a,b)=>Number(a[0])-Number(b[0])).forEach(([n,d])=>{
-    rows.push([String(n).padStart(3,'0'),d.nome,d.tel||'',d.vendedor||'',d.ts?new Date(d.ts).toLocaleString('pt-BR'):'']);
+    rows.push([
+      String(n).padStart(3,'0'), d.nome, d.tel||'', d.vendedor||'',
+      d.pago?'Sim':'Não',
+      d.pago?(d.formaPagamento==='pix'?'Pix':'Dinheiro'):'',
+      d.ts?new Date(d.ts).toLocaleString('pt-BR'):''
+    ]);
   });
   const csv=rows.map(r=>r.map(v=>`"${v}"`).join(',')).join('\n');
   const a=document.createElement('a');
