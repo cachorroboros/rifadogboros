@@ -20,27 +20,27 @@
 // ║  PASSO 1 – Substitua os valores abaixo com os da sua    ║
 // ║  aplicação Firebase (Console → Configurações do projeto) ║
 // ╚══════════════════════════════════════════════════════════╝
-import { initializeApp }        from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth,
-         signInAnonymously,
-         onAuthStateChanged }   from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
-import { getFirestore,
-         doc, getDoc, setDoc,
-         deleteDoc, onSnapshot,
-         collection }           from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+// Import the functions you need from the SDKs you need
+import { initializeApp } from "firebase/app";
+import { getAnalytics } from "firebase/analytics";
+// TODO: Add SDKs for Firebase products that you want to use
+// https://firebase.google.com/docs/web/setup#available-libraries
 
+// Your web app's Firebase configuration
+// For Firebase JS SDK v7.20.0 and later, measurementId is optional
 const firebaseConfig = {
-  apiKey:            "COLE_SEU_API_KEY_AQUI",
-  authDomain:        "SEU_PROJETO.firebaseapp.com",
-  projectId:         "SEU_PROJETO",
-  storageBucket:     "SEU_PROJETO.appspot.com",
-  messagingSenderId: "000000000000",
-  appId:             "1:000000000000:web:xxxxxxxxxxxxxxxxxxxxxxxx"
+  apiKey: "AIzaSyC7FKM98BduBneGX77q99TEorv8xOxooi8",
+  authDomain: "rifa-dogboros.firebaseapp.com",
+  projectId: "rifa-dogboros",
+  storageBucket: "rifa-dogboros.firebasestorage.app",
+  messagingSenderId: "848366037732",
+  appId: "1:848366037732:web:fd39c89222aaf3e1d35af1",
+  measurementId: "G-3N5EY43XKH"
 };
 
-const app  = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db   = getFirestore(app);
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+const analytics = getAnalytics(app);
 
 // ──────────────────────────────────────────────────────────
 //  CRIPTOGRAFIA — AES-GCM via Web Crypto API (nativa, zero deps)
