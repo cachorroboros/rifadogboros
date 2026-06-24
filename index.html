@@ -239,6 +239,23 @@
   .locked-msg { text-align:center; padding:60px 24px; color:var(--muted); font-size:13px; letter-spacing:.5px; line-height:1.6; }
   .locked-msg span { font-family:'Bebas Neue',sans-serif; font-size:40px; display:block; color:var(--ash); margin-bottom:10px; }
   .locked-msg button { margin-top:14px; background:var(--ember); border:none; border-radius:4px; color:var(--white); font-family:'Barlow Condensed',sans-serif; font-weight:700; font-size:12px; letter-spacing:2px; text-transform:uppercase; padding:9px 18px; cursor:pointer; }
+
+  /* ── PAINEL FINANCEIRO ──────────────────────────────────────────── */
+  .financeiro-panel { background:var(--charcoal); border:1px solid var(--ash); border-top:3px solid #2ea043; border-radius:6px; padding:14px 15px; margin-bottom:16px; }
+  .financeiro-panel-title { font-family:'Bebas Neue',sans-serif; font-size:16px; letter-spacing:2px; color:#5fd576; margin-bottom:12px; }
+  .financeiro-grid { display:grid; grid-template-columns:repeat(2,1fr); gap:8px; }
+  @media(max-width:380px){ .financeiro-grid { grid-template-columns:1fr; } }
+  .fin-card { background:var(--smoke); border:1px solid var(--ash); border-radius:5px; padding:11px 13px; }
+  .fin-card.destaque { border-color:#2ea043; background:rgba(46,160,67,.08); }
+  .fin-card.falta { border-color:var(--ember); background:rgba(232,66,10,.08); grid-column:1/-1; }
+  .fin-label { font-size:8px; font-weight:700; letter-spacing:2px; color:var(--muted); text-transform:uppercase; margin-bottom:4px; }
+  .fin-value { font-family:'Bebas Neue',sans-serif; font-size:26px; letter-spacing:1px; color:var(--white); line-height:1; }
+  .fin-value.green { color:#5fd576; }
+  .fin-value.gold { color:var(--gold); }
+  .fin-value.red { color:#ff9d7a; }
+  .fin-sub { font-size:9px; color:var(--muted); margin-top:3px; letter-spacing:.5px; }
+  .fin-progress-wrap { margin-top:10px; background:var(--smoke); border-radius:3px; height:6px; overflow:hidden; border:1px solid var(--ash); }
+  .fin-progress-bar { height:100%; background:linear-gradient(90deg,#2ea043,#5fd576); border-radius:3px; transition:width .4s ease; }
 </style>
 </head>
 <body>
@@ -331,6 +348,7 @@
       <div class="vendas-titulo">VENDAS REGISTRADAS</div>
       <button class="export-btn" onclick="exportCSV()">⬇ CSV</button>
     </div>
+    <div id="financeiro-panel"></div>
     <div id="vendedores-panel"></div>
     <input class="search-box" id="search" placeholder="Buscar por nome, contato, vendedor ou nº..." oninput="renderVendas()">
     <div id="vendas-list"></div>
@@ -737,11 +755,14 @@ function hideLoading(){ document.getElementById('loading').classList.remove('ope
 function renderVendas(){
   const list = document.getElementById('vendas-list');
   const panel = document.getElementById('vendedores-panel');
+  const finPanel = document.getElementById('financeiro-panel');
   if(!currentUser){
     list.innerHTML = `<div class="locked-msg"><span>🔒</span>Área restrita.<br>Faça login para ver os dados dos compradores.<br><button onclick="openLoginScreen()">Fazer login</button></div>`;
     panel.innerHTML = '';
+    finPanel.innerHTML = '';
     return;
   }
+  renderFinanceiroPanel();
   renderVendedoresPanel();
   const q = document.getElementById('search').value.toLowerCase();
   const entries = Object.entries(sales).sort((a,b)=>Number(a[0])-Number(b[0]));
@@ -770,7 +791,57 @@ function renderVendas(){
   }).join('');
 }
 
-function renderVendedoresPanel(){
+function renderFinanceiroPanel(){
+  const panel = document.getElementById('financeiro-panel');
+  const entries = Object.values(sales);
+  const PRECO = 5; // R$ por número
+
+  const totalVendidos = entries.length;
+  const pagos = entries.filter(d => d.pago);
+  const pagosPix = pagos.filter(d => d.formaPagamento === 'pix');
+  const pagosDinheiro = pagos.filter(d => d.formaPagamento !== 'pix');
+  const pendentes = entries.filter(d => !d.pago);
+
+  const recebidoTotal = pagos.length * PRECO;
+  const recebidoPix = pagosPix.length * PRECO;
+  const recebidoDinheiro = pagosDinheiro.length * PRECO;
+  const faltaReceber = pendentes.length * PRECO;
+  const totalPotencial = totalVendidos * PRECO;
+  const pct = totalPotencial > 0 ? Math.round((recebidoTotal / totalPotencial) * 100) : 0;
+
+  if(!entries.length){ panel.innerHTML = ''; return; }
+
+  panel.innerHTML = `
+    <div class="financeiro-panel">
+      <div class="financeiro-panel-title">💰 PAINEL FINANCEIRO</div>
+      <div class="financeiro-grid">
+        <div class="fin-card destaque">
+          <div class="fin-label">Total Recebido</div>
+          <div class="fin-value green">R$ ${recebidoTotal.toFixed(2).replace('.',',')}</div>
+          <div class="fin-sub">${pagos.length} número${pagos.length===1?'':'s'} pago${pagos.length===1?'':'s'}</div>
+        </div>
+        <div class="fin-card">
+          <div class="fin-label">Via Pix</div>
+          <div class="fin-value gold">R$ ${recebidoPix.toFixed(2).replace('.',',')}</div>
+          <div class="fin-sub">${pagosPix.length} número${pagosPix.length===1?'':'s'}</div>
+        </div>
+        <div class="fin-card">
+          <div class="fin-label">Via Dinheiro</div>
+          <div class="fin-value gold">R$ ${recebidoDinheiro.toFixed(2).replace('.',',')}</div>
+          <div class="fin-sub">${pagosDinheiro.length} número${pagosDinheiro.length===1?'':'s'}</div>
+        </div>
+        <div class="fin-card falta">
+          <div class="fin-label">Falta Receber (pendentes)</div>
+          <div class="fin-value red">R$ ${faltaReceber.toFixed(2).replace('.',',')}</div>
+          <div class="fin-sub">${pendentes.length} número${pendentes.length===1?'':'s'} ainda sem pagamento confirmado</div>
+          <div class="fin-progress-wrap"><div class="fin-progress-bar" style="width:${pct}%"></div></div>
+          <div class="fin-sub" style="margin-top:5px">${pct}% recebido do total vendido</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+
   const panel = document.getElementById('vendedores-panel');
   const entries = Object.values(sales);
   if(!entries.length){ panel.innerHTML = ''; return; }
