@@ -144,6 +144,23 @@
   .vendedor-count { font-family:'Bebas Neue',sans-serif; font-size:16px; color:var(--ember); min-width:34px; text-align:right; }
   .vendedor-pago-info { font-size:9px; color:var(--muted); min-width:58px; text-align:right; letter-spacing:.5px; }
 
+  /* ── RESUMO FINANCEIRO ──────────────────────────────────────────── */
+  .financeiro-panel { background:var(--charcoal); border:1px solid var(--ash); border-top:3px solid #2ea043; border-radius:6px; padding:14px 15px; margin-bottom:16px; }
+  .financeiro-panel-title { font-family:'Bebas Neue',sans-serif; font-size:16px; letter-spacing:2px; color:#5fd576; margin-bottom:12px; }
+  .financeiro-grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px; }
+  .financeiro-card { background:var(--smoke); border:1px solid var(--ash); border-radius:5px; padding:10px 12px; }
+  .financeiro-card.full { grid-column:1 / -1; }
+  .financeiro-label { font-size:9px; font-weight:700; letter-spacing:1.5px; color:var(--muted); text-transform:uppercase; margin-bottom:4px; }
+  .financeiro-valor { font-family:'Bebas Neue',sans-serif; font-size:24px; letter-spacing:1px; color:var(--white); }
+  .financeiro-card.recebido .financeiro-valor { color:#5fd576; }
+  .financeiro-card.pendente .financeiro-valor { color:#ff9d7a; }
+  .financeiro-card.falta .financeiro-valor { color:var(--gold); }
+  .financeiro-sub { font-size:10px; color:var(--muted); margin-top:3px; letter-spacing:.3px; }
+  .financeiro-split { display:flex; gap:14px; margin-top:10px; padding-top:10px; border-top:1px solid var(--ash); }
+  .financeiro-split-item { flex:1; text-align:center; }
+  .financeiro-split-item .fs-label { font-size:9px; color:var(--muted); letter-spacing:1px; text-transform:uppercase; margin-bottom:3px; }
+  .financeiro-split-item .fs-valor { font-family:'Bebas Neue',sans-serif; font-size:18px; color:var(--white); }
+
   /* TICKET CANVAS (hidden) */
   #ticket-canvas-wrap { position:fixed; left:-9999px; top:0; }
   #share-grid-canvas-wrap { position:fixed; left:-9999px; top:0; }
@@ -331,6 +348,7 @@
       <div class="vendas-titulo">VENDAS REGISTRADAS</div>
       <button class="export-btn" onclick="exportCSV()">⬇ CSV</button>
     </div>
+    <div id="financeiro-panel"></div>
     <div id="vendedores-panel"></div>
     <input class="search-box" id="search" placeholder="Buscar por nome, contato, vendedor ou nº..." oninput="renderVendas()">
     <div id="vendas-list"></div>
@@ -399,6 +417,7 @@ const auth = firebase.auth();
 const db = firebase.firestore();
 
 const TOTAL = 200;
+const PRECO_NUMERO = 5.00; // valor de cada número da rifa, em R$
 const PRIZES = ['Picanha Estrela','Linguiça Toscana','Filé de Costela','Queijo Coalho','Pão de Alho','Pão Doce de Leite','Bolsa Térmica'];
 
 // Coleção no Firestore: cada documento = um número da rifa vendido.
@@ -736,12 +755,15 @@ function hideLoading(){ document.getElementById('loading').classList.remove('ope
 // ── VENDAS ─────────────────────────────────────────────────────────────
 function renderVendas(){
   const list = document.getElementById('vendas-list');
-  const panel = document.getElementById('vendedores-panel');
+  const vendedoresPanel = document.getElementById('vendedores-panel');
+  const financeiroPanel = document.getElementById('financeiro-panel');
   if(!currentUser){
     list.innerHTML = `<div class="locked-msg"><span>🔒</span>Área restrita.<br>Faça login para ver os dados dos compradores.<br><button onclick="openLoginScreen()">Fazer login</button></div>`;
-    panel.innerHTML = '';
+    vendedoresPanel.innerHTML = '';
+    financeiroPanel.innerHTML = '';
     return;
   }
+  renderFinanceiroPanel();
   renderVendedoresPanel();
   const q = document.getElementById('search').value.toLowerCase();
   const entries = Object.entries(sales).sort((a,b)=>Number(a[0])-Number(b[0]));
@@ -768,6 +790,84 @@ function renderVendas(){
       ${pagoBadge}
     </div>`;
   }).join('');
+}
+
+// ── RESUMO FINANCEIRO ───────────────────────────────────────────────────
+// Calcula o total já recebido (separado por Pix/Dinheiro), o que falta
+// receber de quem já comprou mas não pagou, e o quanto falta vender.
+function getResumoFinanceiro(){
+  const entries = Object.values(sales);
+  let recebidoPix = 0, recebidoDinheiro = 0, pendentePago = 0;
+  let qtdPix = 0, qtdDinheiro = 0, qtdPendente = 0;
+
+  entries.forEach(d=>{
+    if(d.pago){
+      if(d.formaPagamento === 'pix'){ recebidoPix += PRECO_NUMERO; qtdPix++; }
+      else { recebidoDinheiro += PRECO_NUMERO; qtdDinheiro++; }
+    } else {
+      pendentePago += PRECO_NUMERO; qtdPendente++;
+    }
+  });
+
+  const vendidos = entries.length;
+  const disponiveis = TOTAL - vendidos;
+  const recebidoTotal = recebidoPix + recebidoDinheiro;
+  const totalPrevisto = TOTAL * PRECO_NUMERO;
+  const faltaVender = disponiveis * PRECO_NUMERO; // potencial ainda não vendido
+  const faltaReceberTotal = pendentePago + faltaVender; // pendente de pago + não vendido
+
+  return {
+    precoNumero: PRECO_NUMERO,
+    vendidos, disponiveis, totalPrevisto,
+    recebidoPix, recebidoDinheiro, recebidoTotal,
+    qtdPix, qtdDinheiro,
+    pendentePago, qtdPendente,
+    faltaVender, faltaReceberTotal
+  };
+}
+
+function formatBRL(v){
+  return v.toLocaleString('pt-BR', { style:'currency', currency:'BRL' });
+}
+
+function renderFinanceiroPanel(){
+  const panel = document.getElementById('financeiro-panel');
+  const r = getResumoFinanceiro();
+  panel.innerHTML = `
+    <div class="financeiro-panel">
+      <div class="financeiro-panel-title">RESUMO FINANCEIRO</div>
+      <div class="financeiro-grid">
+        <div class="financeiro-card recebido">
+          <div class="financeiro-label">Já recebido</div>
+          <div class="financeiro-valor">${formatBRL(r.recebidoTotal)}</div>
+          <div class="financeiro-sub">${r.qtdPix + r.qtdDinheiro} número${(r.qtdPix+r.qtdDinheiro)===1?'':'s'} pago${(r.qtdPix+r.qtdDinheiro)===1?'':'s'}</div>
+        </div>
+        <div class="financeiro-card pendente">
+          <div class="financeiro-label">Vendido, não pago</div>
+          <div class="financeiro-valor">${formatBRL(r.pendentePago)}</div>
+          <div class="financeiro-sub">${r.qtdPendente} número${r.qtdPendente===1?'':'s'} pendente${r.qtdPendente===1?'':'s'}</div>
+        </div>
+        <div class="financeiro-card falta full">
+          <div class="financeiro-label">Falta receber (pendentes + não vendidos)</div>
+          <div class="financeiro-valor">${formatBRL(r.faltaReceberTotal)}</div>
+          <div class="financeiro-sub">${r.qtdPendente} pendente${r.qtdPendente===1?'':'s'} + ${r.disponiveis} ainda não vendido${r.disponiveis===1?'':'s'} · de um total previsto de ${formatBRL(r.totalPrevisto)}</div>
+        </div>
+      </div>
+      <div class="financeiro-split">
+        <div class="financeiro-split-item">
+          <div class="fs-label">Pix</div>
+          <div class="fs-valor">${formatBRL(r.recebidoPix)}</div>
+        </div>
+        <div class="financeiro-split-item">
+          <div class="fs-label">Dinheiro</div>
+          <div class="fs-valor">${formatBRL(r.recebidoDinheiro)}</div>
+        </div>
+        <div class="financeiro-split-item">
+          <div class="fs-label">Preço/número</div>
+          <div class="fs-valor">${formatBRL(r.precoNumero)}</div>
+        </div>
+      </div>
+    </div>`;
 }
 
 function renderVendedoresPanel(){
