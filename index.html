@@ -841,7 +841,7 @@ function renderFinanceiroPanel(){
     </div>`;
 }
 
-
+function renderVendedoresPanel(){
   const panel = document.getElementById('vendedores-panel');
   const entries = Object.values(sales);
   if(!entries.length){ panel.innerHTML = ''; return; }
